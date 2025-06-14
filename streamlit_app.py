@@ -1,14 +1,17 @@
 import os
 import pyodbc
-import streamlit as st
 import google.generativeai as genai
 
-# ========== CONFIGURATION ==========
-# Hardcoded API Key (only for local testing)
+# Set your API key
 api_key = 'AIzaSyCcSDXlQVJQMgEe1RvNrhRj9eD0DrlH9Nc'
+
+if not api_key:
+    raise ValueError("GOOGLE_API_KEY environment variable is not set.")
 
 # Configure Gemini
 genai.configure(api_key=api_key)
+
+# Correct model reference
 model = genai.GenerativeModel(model_name="gemini-1.5-flash")
 
 # SQL Server connection string
@@ -20,66 +23,59 @@ conn_str = (
     "PWD=StagTest@1"
 )
 
-@st.cache_resource
-def get_db_connection():
-    try:
-        conn = pyodbc.connect(conn_str)
-        return conn
-    except pyodbc.Error as e:
-        st.error(f"❌ Database connection failed: {e}")
-        return None
+# Connect to DB
+try:
+    conn = pyodbc.connect(conn_str)
+    cursor = conn.cursor()
+except pyodbc.Error as e:
+    print(f"❌ Database connection failed: {e}")
+    exit(1)
 
 def generate_sql_from_nl(nl_query):
+    """
+    Uses Gemini to convert NL query to SQL.
+    """
     try:
         prompt = f"Convert this natural language query into a valid SQL statement for SQL Server: {nl_query}"
         response = model.generate_content(prompt)
         generated = response.text.strip()
-        if not generated.lower().startswith("select") or "from" not in generated.lower():
+
+        # Optional: basic validation
+        if not generated.lower().startswith("select") and "from" not in generated.lower():
             raise ValueError("Generated SQL doesn't look valid.")
+
         return generated
     except Exception as e:
         return f"❌ Error generating SQL: {e}"
 
-def execute_sql(conn, sql_query):
+def execute_sql(sql_query):
+    """
+    Executes SQL and returns results.
+    """
     if sql_query.startswith("❌"):
         return sql_query
     try:
-        cursor = conn.cursor()
         cursor.execute(sql_query)
-        columns = [desc[0] for desc in cursor.description]
-        results = cursor.fetchall()
-        return columns, results
+        return cursor.fetchall()
     except Exception as e:
         return f"❌ Error executing query: {e}"
 
-# ========== STREAMLIT UI ==========
-
-st.set_page_config(page_title="Gemini SQL Assistant", layout="wide")
-st.title("💬 Gemini SQL Assistant")
-st.markdown("Convert natural language to SQL and run queries on your SQL Server database.")
-
-# Natural Language Query Input
-nl_query = st.text_input("🧠 Enter your question:", placeholder="e.g., show top 10 documents created in last week")
-
-if st.button("Generate & Run Query"):
-    if nl_query.strip() == "":
-        st.warning("Please enter a query.")
+def main():
+    print("✅ Welcome to the AI-powered Data Query Tool (Gemini Edition)")
+    nl_query = input("🧠 Enter your natural language query: ")
+    sql_query = generate_sql_from_nl(nl_query)
+    print(f"\n📝 Generated SQL:\n{sql_query}")
+    results = execute_sql(sql_query)
+    print("\n📊 Query Results:")
+    if isinstance(results, str):  # Error
+        print(results)
     else:
-        with st.spinner("Thinking with Gemini..."):
-            sql_query = generate_sql_from_nl(nl_query)
-        st.code(sql_query, language='sql')
+        for row in results:
+            print(row)
 
-        conn = get_db_connection()
-        if conn:
-            with st.spinner("Executing SQL..."):
-                result = execute_sql(conn, sql_query)
-
-            if isinstance(result, str):  # error
-                st.error(result)
-            else:
-                columns, rows = result
-                if rows:
-                    st.success("✅ Query executed successfully!")
-                    st.dataframe([dict(zip(columns, row)) for row in rows])
-                else:
-                    st.info("No data returned from the query.")
+if __name__ == "__main__":
+    try:
+        main()
+    finally:
+        cursor.close()
+        conn.close()
